@@ -1,5 +1,5 @@
 /**
- * @license r.js 2.1.11+ Mon, 24 Feb 2014 19:07:02 GMT Copyright (c) 2010-2014, The Dojo Foundation All Rights Reserved.
+ * @license r.js 2.1.11+ Thu, 06 Mar 2014 09:46:08 GMT Copyright (c) 2010-2014, The Dojo Foundation All Rights Reserved.
  * Available via the MIT or new BSD license.
  * see: http://github.com/jrburke/requirejs for details
  */
@@ -20,7 +20,7 @@ var requirejs, require, define, xpcUtil;
 (function (console, args, readFileFunc) {
     var fileName, env, fs, vm, path, exec, rhinoContext, dir, nodeRequire,
         nodeDefine, exists, reqMain, loadedOptimizedLib, existsForNode, Cc, Ci,
-        version = '2.1.11+ Mon, 24 Feb 2014 19:07:02 GMT',
+        version = '2.1.11+ Thu, 06 Mar 2014 09:46:08 GMT',
         jsSuffixRegExp = /\.js$/,
         commandOption = '',
         useLibLoaded = {},
@@ -3442,7 +3442,7 @@ if(env === 'node') {
 /*jslint plusplus: false, octal:false, strict: false */
 /*global define: false, process: false */
 
-define('node/file', ['fs', 'path', 'prim'], function (fs, path, prim) {
+define('node/file', ['fs', 'path', 'prim', 'http', 'url'], function (fs, path, prim, http, url) {
 
     var isWindows = process.platform === 'win32',
         windowsDriveRegExp = /^[a-zA-Z]\:\/$/,
@@ -3505,6 +3505,10 @@ define('node/file', ['fs', 'path', 'prim'], function (fs, path, prim) {
             return parts.join('/');
         },
 
+        is_url : function(path) {
+            return path.indexOf('//') === 0 || path.indexOf("http://") === 0 || path.indexOf("https://") === 0;
+        },
+
         /**
          * Gets the absolute file path as a string, normalized
          * to using front slashes for path separators.
@@ -3519,10 +3523,16 @@ define('node/file', ['fs', 'path', 'prim'], function (fs, path, prim) {
         },
 
         isFile: function (path) {
+            if (this.is_url(path)) {
+                return true;
+            }
             return fs.statSync(path).isFile();
         },
 
         isDirectory: function (path) {
+            if (this.is_url(path)) {
+                return false;
+            }
             return fs.statSync(path).isDirectory();
         },
 
@@ -3661,7 +3671,38 @@ define('node/file', ['fs', 'path', 'prim'], function (fs, path, prim) {
         readFileAsync: function (path, encoding) {
             var d = prim();
             try {
-                d.resolve(file.readFile(path, encoding));
+                if (this.is_url(path)) {
+                    if (path.indexOf("//") === 0) {
+                        path = "http:" + path;
+                    }
+                    var options = url.parse(path);
+                    options.method = 'GET';
+                    
+                    var r = http.request(options, function(res) {
+                        res.setEncoding(encoding);
+                        if (res.statusCode > 400) {
+                            d.reject(new Error('Status: ' + res.statusCode));
+                        }
+                        else {
+                            var text = "";
+                            res.on('data', function(chunk) {
+                                text += chunk;
+                            })
+                            .on('end', function() {
+                                console.log("Fetched " + path);
+                                d.resolve(text);
+                            });
+                        }
+                    })
+                    .on('error', function(e) {
+                        console.log("error " + e + " fetching " + path);
+                        d.reject(e);
+                    });
+                    r.end();
+                }
+                else {
+                    d.resolve(file.readFile(path, encoding));
+                }
             } catch (e) {
                 d.reject(e);
             }
@@ -25110,12 +25151,15 @@ define('requirePatch', [ 'env!env/file', 'pragma', 'parse', 'lang', 'logger', 'c
          * @param {String} url
          * @returns {Boolean}
          */
-        require._isSupportedBuildUrl = function (url) {
+        require._isSupportedBuildUrl = function (url, fetchFromNetwork) {
             //Ignore URLs with protocols, hosts or question marks, means either network
             //access is needed to fetch it or it is too dynamic. Note that
             //on Windows, full paths are used for some urls, which include
             //the drive, like c:/something, so need to test for something other
             //than just a colon.
+            if (fetchFromNetwork && file.is_url(url)) {
+                return true;
+            }
             if (url.indexOf("://") === -1 && url.indexOf("?") === -1 &&
                     url.indexOf('empty:') !== 0 && url.indexOf('//') !== 0) {
                 return true;
@@ -25246,7 +25290,7 @@ define('requirePatch', [ 'env!env/file', 'pragma', 'parse', 'lang', 'logger', 'c
                     //Only handle urls that can be inlined, so that means avoiding some
                     //URLs like ones that require network access or may be too dynamic,
                     //like JSONP
-                    if (require._isSupportedBuildUrl(url)) {
+                    if (require._isSupportedBuildUrl(url, context.config.fetchFromNetwork)) {
                         //Adjust the URL if it was not transformed to use baseUrl.
                         url = normalizeUrlWithBase(context, moduleName, url);
 
@@ -25517,7 +25561,7 @@ define('requirePatch', [ 'env!env/file', 'pragma', 'parse', 'lang', 'logger', 'c
                     layer.modulesWithNames[id] = true;
                     layer.pathAdded[id] = true;
                 }
-            } else if (map.url && require._isSupportedBuildUrl(map.url)) {
+            } else if (map.url && require._isSupportedBuildUrl(map.url, context.config.fetchFromNetwork)) {
                 //If the url has not been added to the layer yet, and it
                 //is from an actual file that was loaded, add it now.
                 url = normalizeUrlWithBase(context, id, map.url);
